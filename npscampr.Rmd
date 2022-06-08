@@ -1,0 +1,651 @@
+---
+title: "National Parks Camper"
+subtitle: "How far ahead of time do I need to reserve a campsite?"
+author: "Nathan Hoteling"
+date: "1/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(stringr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(readr)
+library(forcats)
+library(tidyr)
+library(forecast)
+
+```
+
+## Raw data and pre-processing
+
+Data were downloaded from the [Recreation Information Database](https://ridb.recreation.gov/) (RIDB), hosted by Recreation.gov [here](https://ridb.recreation.gov/download).  RIDB offers an API for data access, however annual reservations data are available as raw CSV files for dates from 2006 through 2019.  The files are quite large, at >1GB per year and more than 3M reservations, so pre-processing can be fairly time-consuming.  There are also several supplemental files that list and define various attributes in the data.   
+
+Cleaning and pre-processing are carried out over four distinct phases:  
+1. Convert raw CSV file to binary RDS for faster reading later with R    
+2. Filter reservations data to NPS and USFS, adjust variable names and types   
+3. Process reservations data into daily tallies for each facility over the course of the year  
+4. Read and process auxiliary files with campsite meta-data  
+
+
+```{r, include=FALSE, eval=FALSE, echo=FALSE}
+# Read raw data
+# - read the raw data & write to an RDS file so it can be read faster later
+# - also deal with whatever file read issues come up (ugh)
+#
+#  from 'data/raw/reservationsXXXX.csv
+#  to 'data/reservationsXXXX.rds
+#
+
+##### --- 2020 ---
+df.raw <- read.csv("data/raw/FY20 Historical Reservations Full.csv", header=TRUE)  # takes ~70s to read
+write_rds(df.raw, file="data/rds/raw_reservations2020.rds") 
+#####
+
+##### --- 2019 ---
+df.raw <- read.csv("data/raw/reservations2019.csv", header=TRUE)  # takes ~70s to read
+write_rds(df.raw, file="data/rds/raw_reservations2019.rds") 
+#####
+
+##### --- 2018 --- 
+# Some issues with 2018 data at around line #2,708,187
+# There is a note in the zipped folder about data quality not guaranteed
+file_out <- file("data/raw/reservations2018-rev.csv","w")
+fstr00 <- readLines("data/raw/reservations2018.csv")
+fstr01 <- str_replace_all(fstr00, pattern = '\"', replacement="")
+writeLines(fstr01, file_out)
+close(file_out)
+df.raw <- read.csv(file="data/raw/reservations2018-rev.csv", header=TRUE)
+write_rds(df.raw, file="data/rds/raw_reservations2018.rds")
+######
+
+##### --- 2017 ---
+df.raw <- read.csv("data/raw/reservations2017.csv", header=TRUE)
+write_rds(df.raw, file="data/rds/raw_reservations2017.rds")
+
+##### --- 2016 ---
+df.raw <- read.csv("data/raw/2016.csv", header=TRUE)
+write_rds(df.raw, file="data/rds/raw_reservations2016.rds")
+
+##### --- 2015 ---
+df.raw <- read.csv("data/raw/2015.csv", header=TRUE)
+write_rds(df.raw, file="data/rds/raw_reservations2015.rds")
+```
+
+
+
+```{r, eval=FALSE, include=FALSE, echo=FALSE}
+# Data Pre-processing
+# - Filter raw data down to NPS and USFS camping reservations
+# - Standardize naming conventions; ie: park, facility, etc
+# - Standardize data types
+#
+df.raw <- read_rds("data/reservations2016.rds")
+parks_converter <- read.csv("data/parks-converter.csv", header=TRUE)
+facilities_converter <- read.csv("data/facilities-converter.csv", header=TRUE)
+
+# filtering for camping reservations data
+agencies <- c("NPS") #c("NPS", "USFS")
+site_types <- c("STANDARD NONELECTRIC","TENT ONLY NONELECTRIC")
+
+# standardize park & facility names across years
+standard_names <- function(fstr, parks_converter, fy) {
+  col <- which(names(parks_converter) == fy)
+  fstr_new <- parks_converter$npscampr[match(fstr,parks_converter[,col])]
+  return(fstr_new)
+}
+
+#
+# Each year is a little different, so the code below
+# is specialized for each year.  Only run the appropriate 
+# code for the respective year, then save the file
+
+# -- 2020 data --
+df.res <- df.raw %>% 
+  filter( (agency %in% agencies) & 
+         #inventorytype == "CAMPING" &
+         (sitetype %in% site_types) ) %>%
+  mutate(orderdate = as.Date(floor_date(ymd_hms(orderdate), unit="day")),
+         startdate = as.Date(floor_date(ymd_hms(startdate), unit="day")),
+         enddate = as.Date(floor_date(ymd_hms(enddate), unit="day")),
+         window = difftime(startdate,orderdate, units="days"),
+         state = state.abb[match(facilitystate,state.name)],
+         facility = standard_names(park, facilities_converter, "FY2019"),
+         facility.na = ifelse(is.na(facility),park,""),
+         park = standard_names(parentlocation, parks_converter, "FY2019"),
+         park.na = ifelse(is.na(park), parentlocation, "")) %>%
+  rename(lon = facilitylongitude,
+         lat = facilitylatitude) %>%
+  select(facility, facilityid, productid, park, state, lon, lat, agency, 
+         window, orderdate, startdate, enddate,
+         numberofpeople, totalpaid)
+
+# -- 2019 data --
+df.res <- df.raw %>% 
+  filter( (agency %in% agencies) & 
+         #inventorytype == "CAMPING" &
+         (sitetype %in% site_types) ) %>%
+  mutate(orderdate = as.Date(floor_date(ymd_hms(orderdate), unit="day")),
+         startdate = as.Date(floor_date(ymd_hms(startdate), unit="day")),
+         enddate = as.Date(floor_date(ymd_hms(enddate), unit="day")),
+         window = difftime(startdate,orderdate, units="days"),
+         state = state.abb[match(facilitystate,state.name)],
+         facility = standard_names(park, facilities_converter, "FY2019"),
+         park = standard_names(parentlocation, parks_converter, "FY2019")) %>%
+  rename(lon = facilitylongitude,
+         lat = facilitylatitude) %>%
+  select(facility, facilityid, productid, park, state, lon, lat, agency, 
+         window, orderdate, startdate, enddate,
+         numberofpeople, totalpaid)
+
+# -- 2018 data --
+df.res <- df.raw %>% 
+  filter( (Agency %in% agencies) & (SiteType %in% site_types) ) %>% 
+  select(-c(Tent:Marinaboat)) %>%
+  separate(Park, into = c("Park"), sep = " ---", extra="drop") %>%
+  separate(StartDate, into=c("StartDate"), sep =" ", extra="drop") %>%
+  separate(OrderDate, into=c("OrderDate"), sep=" ", extra="drop") %>%
+  filter(!(StartDate %in% c("60.000","44.000","52.000"))) %>%   # problem points
+  mutate(orderdate = ymd(OrderDate),
+         startdate = ymd(StartDate),
+         enddate = ymd(EndDate),
+         window = difftime(startdate, orderdate, units="days"),
+         lon = as.numeric(FacilityLongitude),
+         lat = as.numeric(FacilityLatitude),
+         productid = as.integer(ProductID),
+         numberofpeople = as.integer(NumberOfPeople),
+         facilityid = as.integer(FacilityID),
+         facility = standard_names(Park, facilities_converter, "FY2018"),
+         park = standard_names(RegionDescription, parks_converter, "FY2018")) %>%
+  rename(state = FacilityState,
+         agency = Agency,
+         totalpaid = TotalPaid) %>%
+  select(facility, facilityid, productid, park, state, lon, lat, agency,
+         window, orderdate, startdate, enddate,
+         numberofpeople, totalpaid)
+
+
+# -- 2017 data --
+df.res <- df.raw %>% 
+  filter( (Agency %in% agencies) & (SiteType %in% site_types) ) %>% 
+  select(-c(Tent:Marinaboat)) %>%
+  mutate(orderdate = ymd(OrderDate),
+         startdate = ymd(StartDate),
+         enddate = ymd(EndDate),
+         numberofpeople = as.integer(NumberOfPeople),
+         productid = as.integer(ProductID),
+         lon = as.numeric(FacilityLongitude),
+         lat = as.numeric(FacilityLatitude),
+         window = difftime(startdate, orderdate, units="days"),
+         park = standard_names(RegionDescription, parks_converter, "FY2017"),
+         facility = standard_names(Park, facilities_converter, "FY2017"),
+         facility.na = ifelse(is.na(facility),Park,"")) %>%
+  rename(state = FacilityState,
+         facilityid = FacilityID,
+         agency = Agency,
+         totalpaid = TotalPaid) %>%
+  select(facility, facilityid, productid, park, state, lon, lat, agency,
+         window, orderdate, startdate, enddate,
+         numberofpeople, totalpaid,facility.na)
+
+
+# -- FY2016 data --
+df.res <- df.raw %>% 
+  filter( (Agency %in% agencies) & (SiteType %in% site_types) ) %>% 
+  select(-c(Tent:Marinaboat)) %>%
+  mutate(orderdate = ymd(OrderDate),
+         startdate = ymd(StartDate),
+         enddate = ymd(EndDate),
+         numberofpeople = as.integer(NumberOfPeople),
+         productid = as.integer(ProductID),
+         lon = as.numeric(FacilityLongitude),
+         lat = as.numeric(FacilityLatitude),
+         window = difftime(startdate, orderdate, units="days"),
+         park = standard_names(RegionDescription, parks_converter, "FY2017"),  ##
+         facility = standard_names(Park, facilities_converter, "FY2016")) %>% #,
+         #facility.na = ifelse(is.na(facility),Park,"")) %>%
+  rename(state = FacilityState,
+         facilityid = FacilityID,
+         agency = Agency,
+         totalpaid = TotalPaid) %>%
+  select(facility, facilityid, productid, park, state, lon, lat, agency,
+         window, orderdate, startdate, enddate,
+         numberofpeople, totalpaid)
+
+# -- FY2015 data --
+df.res <- df.raw %>% 
+  filter( (Agency %in% agencies) & (SiteType %in% site_types) ) %>% 
+  select(-c(Tent:Marinaboat)) %>%
+  mutate(orderdate = ymd(OrderDate),
+         startdate = ymd(StartDate),
+         enddate = ymd(EndDate),
+         numberofpeople = as.integer(NumberOfPeople),
+         productid = as.integer(ProductID),
+         lon = as.numeric(FacilityLongitude),
+         lat = as.numeric(FacilityLatitude),
+         window = difftime(startdate, orderdate, units="days"),
+         park = standard_names(RegionDescription, parks_converter, "FY2017"),  ##
+         facility = standard_names(Park, facilities_converter, "FY2015")) %>% #,
+         #facility.na = ifelse(is.na(facility),Park,"")) %>%
+  rename(state = FacilityState,
+         facilityid = FacilityID,
+         agency = Agency,
+         totalpaid = TotalPaid) %>%
+  select(facility, facilityid, productid, park, state, lon, lat, agency,
+         window, orderdate, startdate, enddate,
+         numberofpeople, totalpaid)
+
+
+# write the clean file(s)
+write_rds(df.res, file="data/camping_reservations_YYYY.rds")
+```
+
+
+```{r, eval=FALSE, include=FALSE}
+# Combine annual NPS reservations data into a single file
+res2020 <- readRDS("data/camping_reservations_2020.rds")
+res2019 <- readRDS("data/camping_reservations_2019.rds")
+res2018 <- readRDS("data/camping_reservations_2018.rds")
+res2017 <- readRDS("data/camping_reservations_2017.rds")
+res2016 <- readRDS("data/camping_reservations_2016.rds")
+res2015 <- readRDS("data/camping_reservations_2015.rds")
+res <- rbind(res2015, res2016, res2017, res2018, res2019, res2020)
+write_rds(res, file="data/rds/camping_reservations.rds")
+```
+
+
+```{r, eval=FALSE, include=FALSE}
+# Data processing
+# - convert reservations into daily tallies
+#
+
+# Read combined reservations data
+df.res <- readRDS("data/camping_reservations.rds")
+
+
+facilities <- unique(df.res$facility)
+facility_ids <- unique(df.res$facilityid)
+date_range <- seq.Date(from=as.Date(min(df.res$startdate, na.rm=TRUE)), 
+                       to=as.Date(max(df.res$startdate, na.rm=TRUE)), 
+                       by="day")
+
+# This takes awhile to run through...
+# Loop through each facility and tally up
+# daily occupancy
+d <- lapply(seq_len(length(facilities)), function(i) {    # loop through campgrounds
+  df <- df.res %>% filter(facility == facilities[i])      # filter on campground
+  print(paste(i, facilities[i], nrow(df)))                           # print output
+  dd <- lapply(seq_len(length(date_range)), function(j) { # loop through dates
+    dt <- date_range[j]
+    df.tmp <- df %>% filter(dt %within% interval(startdate,enddate-days(1))) %>% 
+      summarise(nres0=n(),                         # num of reservations
+                nres = length(unique(productid)),  # num of unique campsites
+                npeople=sum(numberofpeople),
+                totalpaid = sum(totalpaid)) %>%
+      mutate(facility = facilities[i],
+             facilityid = facility_ids[i],
+             date = dt)
+    return(df.tmp)
+  })
+  df2 <- do.call(rbind,dd)
+  return(df2)
+})
+df.daily <- do.call(rbind,d)
+
+# ALSO: determine nsites for each location
+df.sites <- read.csv("data/raw/RIDBFullExport_V1_CSV/Campsites_API_v1.csv") %>% 
+  filter(FacilityID %in% df.daily$facilityid) %>%
+  mutate(FacilityID = as.character(FacilityID)) %>%
+  group_by(FacilityID) %>%
+  summarise(nsites = n()) %>%
+  rename(facilityid = FacilityID)
+
+df.tmp1 <- df.daily %>% 
+  group_by(facilityid) %>% 
+  summarise(facility=max(facility)) %>% 
+  left_join(df.st, by="facilityid")  
+
+# This variable will feed the facilities converter 
+# Note: Eight of the campsite facilities aren't listed in the file
+# for these I looked the campground up on Recreation.gov and either
+# counted sites or found the information under the Facility Information
+# tab.
+#
+write.csv(df.tmp1, file="data/sites.csv")
+
+
+write_rds(df.daily, file="data/camping_daily.rds")
+
+```
+
+
+## Exploratory plots
+
+To better understand the data, a few exploratory plots are constructed with the 2019 data.  
+
+```{r, include=FALSE, echo=FALSE, eval=TRUE}
+#
+#  Prepare pre-processed data for plotting / analysis
+#
+
+# Read pre-processed data
+#df.res <- readRDS("data/camping_reservations_2019.rds") # individual reservations
+df.daily <- readRDS("data/camping_daily.rds")      # daily totals
+df.res <- readRDS("data/camping_reservations.rds") # individual reservations
+parks_converter <- read.csv("data/parks-converter.csv", header=TRUE)
+facilities_converter <- read.csv("data/facilities-converter.csv", header=TRUE)
+df.daily$park <- facilities_converter$park[match(df.daily$facility,facilities_converter$npscampr)]
+
+
+df.sites <- read.csv("data/raw/RIDBFullExport_V1_CSV/Campsites_API_v1.csv") %>% 
+  filter(FacilityID %in% df.daily$facilityid) %>%
+  mutate(FacilityID = as.character(FacilityID)) %>%
+  group_by(FacilityID) %>%
+  summarise(nsites = n()) %>%
+  rename(facilityid = FacilityID)
+
+df.tmp1 <- df.daily %>% 
+  group_by(facilityid) %>% 
+  summarise(facility=max(facility)) %>% 
+  left_join(df.st, by="facilityid")  
+
+# Now read file with all campsites, aggregate, etc
+df.sites <- read.csv("data/raw/RIDBFullExport_V1_CSV/Campsites_API_v1.csv") %>%
+  filter(FacilityID %in% df.res$facilityid) %>%
+  group_by(FacilityID) %>%
+  summarise(nsites = n()) %>%
+  rename(facilityid = FacilityID) %>%
+  left_join(
+    df.res %>% select(facility, facilityid, park, state, lon, lat) %>% 
+      group_by(facilityid) %>%
+      summarise(facility=max(facility), 
+                park=max(park), 
+                state=max(state),
+                lon=mean(lon, na.rm=TRUE), lat=mean(lat, na.rm=TRUE)),
+    by = "facilityid"
+  )
+
+# Vector of all facilities (individual campgrounds)
+facilities <- unique(df.res$facility)
+
+# Daily date range in this dataset
+date_range <- seq.Date(from=as.Date(min(df.res$startdate, na.rm=TRUE)), 
+                       to=as.Date(max(df.res$startdate, na.rm=TRUE)), 
+                       by="day")
+
+# Get vector of National Parks
+nps_parks <- unique(df.res$park[ df.res$agency == "NPS" ])
+
+
+df_dates <- data.frame(week = unique(floor_date(date_range, unit="week")))
+d <- lapply(seq_len(length(facilities)), function(i) {
+  df <- data.frame(week=df_dates, facility=facilities[i],
+                   park = facilities_converter$park[match(facilities[i],facilities_converter$npscampr)])
+})
+df_dates_new <- do.call(rbind, d)
+
+# String manipulation for nicer labels
+abbr <- "Parks|Park|Monument|Seashore|National|Recreation|Area|Lakeshore|Historical|Of The Gunnison|& Preserve"
+```
+
+### Filled fraction
+
+The plot below shows the fraction of campsites reserved for each park, aggregated by week.  Several panels show a flat-line pattern less than 1.0, since not all campsites are reservable ahead of time.  For example, in Canyonlands National Park, only "loop B" sites are reservable, whereas "loop A" sites are operated on a first-come, first-served basis.  This amounts to around half of the total sites. 
+
+```{r, include=FALSE, echo=FALSE, message=FALSE}
+# Now combine campground information with the daily totals
+df.camping <- df.daily %>%
+  left_join(df.sites %>% 
+              select(facility, facilityid, park, state, lon, lat, nsites), 
+            by="facility") %>%
+  mutate(filled = nres/nsites,
+         facilityif = facilityid.x,
+         park = park.x) %>%
+  select(-facilityid.x, -facilityid.y, -park.x, -park.y) %>%
+  mutate(date = floor_date(date, unit="week")) %>%
+  group_by(date, facility, park) %>% 
+  summarise(nres = sum(nres), nsites = sum(nsites), 
+            state = max(state), npeople = sum(npeople),
+            park = max(park),
+            lon = mean(lon), lat = mean(lat)) %>%
+  mutate(filled = nres/nsites,
+         pk = parks_converter$shortName[match(park,parks_converter$npscampr)])
+
+
+# Plot Fraction of campsites reserved over the year
+p.camping <- ggplot(df.camping, aes(x=date, y=filled, group=facility)) +
+  geom_hline(yintercept=1, color="grey60", size=0.5, alpha=0.5) +
+  geom_text(aes(x=median(date),y=0.5, label=pk), size=3, color="grey70", alpha=0.2) +
+  geom_line(alpha=0.7, color="grey15", size=0.3) +
+  scale_x_date(date_labels = "%Y") +
+  scale_y_continuous(breaks = c(0,0.5,1.0)) +
+  labs(x="Time of year", y="Fraction of campsites reserved") +
+  facet_wrap( ~pk, ncol=6, scales = "fixed") +
+  theme_minimal() +
+  theme(strip.text = element_blank())
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=9}
+p.camping
+```
+
+
+### Planning Window
+
+The plots below show the typical planning window, defined as the median number of days ahead of time that campsite reservations are typically made over the course of the year.  The maximum planning window varies by park, but it generally does not exceed around six months.  A flat-top pattern is seen for locations that are in particularly high demand; these sites fill up at or near the date that they become available.  For example, in Zion National Park sites are made available on a 14-day rolling basis and they fill up almost immediately.  Similarly, campsites at Apostle Islands are made available on a 30-day rolling basis and also fill up very quickly.
+
+```{r, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+#
+#  Planning Window
+#
+df.planning <- df.res %>% filter(park %in% nps_parks) %>%
+  mutate(window = ifelse(window < 0, NA, ifelse(window >200,200,window)),
+         week = floor_date(startdate, unit="week")) %>%
+  full_join(df_dates_new, by=c("week","facility","park")) %>%
+  group_by(facility, week) %>%
+  summarise(median_window = median(window, na.rm=TRUE),
+            median_window = ifelse(is.na(median_window), -1, median_window),
+            upper_quartile = quantile(window, 0.75, na.rm=TRUE),
+            lower_quartile = quantile(window, 0.25, na.rm=TRUE),
+            max_window = max(window, na.rm=TRUE),
+            min_window = min(window, na.rm=TRUE),
+            mean_window = mean(window, na.m=TRUE),
+            stdev = sd(window, na.rm=TRUE),
+            lon = mean(lon), lat = mean(lat),
+            park = max(park)) %>%
+  mutate(pk = parks_converter$shortName[match(park,parks_converter$npscampr)],
+         park = as.factor(park))
+  
+
+
+
+
+p.planning <- ggplot(df.planning, 
+                   aes(x=as.Date(week), y=median_window, group=facility)) +
+  geom_text(aes(x=median(as.Date(week)),y=100, label=pk), size=3, color="grey75", alpha=0.2) +
+  #geom_point(size=0.8, alpha=0.7, color="grey20") +
+  #geom_line(color="grey40", size=0.3, alpha=0.5) +
+  geom_line(color="grey15", size=0.3, alpha=0.7) +
+  scale_x_date(date_labels = "%Y") +
+  facet_wrap(~pk, ncol=6, scales="fixed") +
+  labs(x="Time of year", y="Median planning window (days)") +
+  theme_minimal() +
+  theme(strip.text = element_blank())
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=9}
+p.planning
+```
+
+### Campsite demand
+
+We can combine the two variables plotted above into a single metric called <b>demand</b> as a means to represent the desireablility of a particular location for camping.  This metric is defined as the product of the normalized planning window and the fraction of reservable campsites filled.  Here, we refer to the normalized planning window as the median planning window divided by the maximum planning window; for example, in the case of Zion National Park campsites are made available on a rolling 14-day window. Since these fill up almost immediately, median planning window is 14 days and the normalized value is 14/14 = 1.0.  As such, the demand can take on values between 0 and 1. 
+
+```{r, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+
+# join df.daily & df.sites to get filled fraction
+df.tmp <- df.daily %>% 
+  left_join(df.sites %>% select(facility, facilityid, park, state, lon, lat, nsites),
+            by="facility") %>% 
+  group_by(facility, date) %>%
+  summarise(nsites = sum(nsites, na.rm=TRUE), nres = sum(nres, na.rm=TRUE)) %>%
+  mutate(filled = nres/nsites)
+
+
+d <- lapply(seq_len(length(facilities)), function(i) {
+  
+  # Compute normalized window
+  max_filled <- quantile((df.tmp %>%
+                             filter(facility == facilities[i]) %>%
+                             select(filled) %>%
+                             arrange(desc(filled)))$filled, 0.95, na.rm=TRUE)
+  df1 <- df.camping %>% filter(facility == facilities[i]) %>%
+    mutate(norm_filled = filled / max_filled,
+           key = paste(facility,date,sep = "-")) %>%
+    select(key, date, facility, park, pk, lon, lat, filled,norm_filled)
+    
+  # Compute normalized filled fraction
+  #max_window <- as.integer((df.res %>% 
+  #                            filter(park == nps_parks[i]) %>% 
+  #                            select(window) %>% 
+  #                            arrange(desc(window)))[1,1])
+  df.facility <- df.planning %>% filter(facility == facilities[i])
+  max_window <- quantile(df.facility$median_window, 0.95, na.rm=TRUE)
+  df.facility$norm_window <- df.facility$median_window / max_window
+  
+  
+  #max_window <- quantile((df.planning %>% filter(facility == facilities[i]) %>%
+  #  select(median_window))$median_window, 0.95, na.rm=TRUE)
+  
+  
+  df2 <- df.facility %>%
+    mutate(key = paste(facility,week,sep="-")) %>%
+    select(key, week, park, pk, median_window,norm_window)
+  
+  # Combine
+  df <- df2 %>% select(key, facility, park, pk, median_window, norm_window) %>% 
+    left_join(df1 %>% select(key, date, lon, lat, filled, norm_filled, facility), by="key") %>%
+    mutate(demand = norm_window * norm_filled,
+           facility = facility.x) %>%
+    select(date, facility, park, pk, lon, lat,
+           median_window, filled,
+           norm_window, norm_filled, demand)
+  return(df)
+})
+df.demand <- do.call(rbind,d) %>%
+  mutate(demand = ifelse(demand > 1.0, 1.0, demand))
+
+
+
+p.demand <- ggplot(df.demand, 
+                   aes(x=as.Date(date), y=demand, group=facility)) +
+  geom_text(aes(x=median(as.Date(date), na.rm=TRUE),y=0.5, label=pk), size=3, color="grey75", alpha=0.2) +
+  #geom_point(size=0.8, alpha=0.7, color="grey20") +
+  #geom_line(color="grey40", size=0.3, alpha=0.5) +
+  geom_line(color="grey15", size=0.3, alpha=0.7) +
+  scale_x_date(date_labels = "%Y") +
+  scale_y_continuous(breaks = c(0.0,0.5,1.0)) +
+  facet_wrap(~pk, ncol=6, scales="fixed") +
+  labs(x="Time of year", y="Campsite Demand") +
+  theme_minimal() +
+  theme(strip.text = element_blank())
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=9}
+p.demand
+```
+
+```{r}
+df.dmd <- df.demand %>%
+  mutate(month = month(date, label=TRUE, abbr=TRUE),
+         demand = ifelse(demand == 0, NA,demand)) %>%
+  group_by(pk, month) %>%
+  summarise(demand = mean(demand, na.rm=TRUE),
+            lon = mean(lon, na.rm=TRUE),
+            lat = mean(lat, na.rm=TRUE))
+
+
+m <- c("Jan", "Feb","Mar", "Apr", "May", "Jun",
+       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+df.dmd$month <- factor(df.dmd$month, levels = m)
+
+
+p.dmd <- ggplot(df.dmd, aes(x = month, group=pk)) +
+  geom_col(aes(y=demand)) +
+  scale_x_discrete(breaks = c("Feb", "Jun", "Oct")) +
+  facet_wrap(~pk) +
+  theme_minimal()
+
+
+p.hi <- df.dmd %>% 
+  group_by(pk) %>% 
+  summarise(demand = mean(demand, na.rm=TRUE)) %>% 
+  mutate(pk = fct_reorder(pk,demand)) %>%
+  filter( !(pk %in% c("Everglades", "Catoctin"))) %>%
+  ggplot(aes(x=pk, y=demand)) +
+  labs(x="", y="Campsite demand") +
+  geom_col() +
+  coord_flip() +
+  theme_minimal()
+```
+
+```{r}
+
+df.pln <- df.planning %>%
+  mutate(month = floor_date(ymd(paste("2021", month(week), day(week), sep="-")), unit="month")) %>%
+  group_by(park, month) %>%
+  summarise(window = mean(median_window, na.rm=TRUE),
+            lo = mean(lower_quartile, na.rm=TRUE),
+            hi = mean(upper_quartile, na.rm=TRUE),
+            book_by = month-mean(window, na.rm=TRUE))
+  
+
+p.pln <- df.pln %>% filter(park == "Canyonlands National Park" & 
+                             window >0) %>%
+  ggplot(aes(y=month, x=book_by)) +
+  geom_point() +
+  geom_abline(slope=1, intercept=0) +
+  lims(x=as.Date(c("2020-11-01","2022-01-01")), y=as.Date(c("2020-11-01","2022-01-01"))) +
+  theme_minimal()
+```
+
+
+
+```{r}
+#
+#  Time Series Analysis
+#
+
+
+df.res <- readRDS("data/camping_reservations.rds") # individual reservations
+
+df.tst <- df.res %>%
+  mutate(startDate = as.Date(paste("2019",month(startdate),day(startdate),sep="-")),
+         orderDate = startDate - window)
+
+df.start <- df.res %>% group_by(startdate) %>% summarise(n = n())
+ts_start <- ts(df.start$n, frequency=7)
+fc_start <- decompose(ts_start)
+
+
+df.order <- df.res %>% filter(park != "Yosemite National Park") %>% group_by(orderdate) %>% summarise(n = n())
+ts_order <- ts(df.order$n, frequency = 7)
+fc_order <- decompose(ts_order)
+
+p.start <- ggplot(df.start, aes(x=startdate)) + geom_histogram(bins=365*3) + theme_minimal()
+
+p.order <- ggplot(df.res %>% filter(park == "Yosemite National Park"), 
+                  aes(x=orderdate)) + geom_histogram(bins=365*5)
+
+p.order <- ggplot(df.order, aes(x=orderdate)) + geom_histogram(bins=365*3) + theme_minimal()
+
+
+
+
+```
+

@@ -1,0 +1,102 @@
+---
+title: "Rpostgres Stuff"
+author: "Nathan Hoteling"
+date: "9/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library("RPostgreSQL")
+library("RPostgres")
+
+# Parameters were all determined from pgAdmin
+con <- DBI::dbConnect(RPostgres::Postgres(),
+                      dbname="npscampr",
+                      host="localhost",
+                      port = 5432,
+                      user = "newuser",
+                      password = "password"
+                      )
+
+#dbSendQuery(con, "CREATE EXTENSION pg_trgm;")
+#dbSendQuery(con, "SELECT set_limit(0.5);")
+```
+
+
+
+```{r}
+# List ten results for query of park names
+dbGetQuery(con, "SELECT DISTINCT park FROM fy2020 LIMIT 10;")
+```
+
+```{r}
+
+t0 <- Sys.time()
+dbGetQuery(con, "SELECT DISTINCT park FROM fy2020 WHERE park = 'BARTON FLATS' LIMIT 100;")
+t1 <- Sys.time()
+dt <- t1-t0
+```
+
+```{r}
+# Similarity query
+t0 <- Sys.time()
+dbGetQuery(con, 
+          "SELECT DISTINCT park, similarity(park,'WHITE MOUNTAINS') AS score 
+           FROM fy2020
+           WHERE park % 'WHITE MOUNTAINS'
+           ORDER BY score DESC, park;")
+t1 <- Sys.time()
+dt_sim1 <- t1-t0
+```
+```{r}
+#dbSendQuery(con, "CREATE INDEX trgm_index_gist ON fy2020 USING GIST (park gist_trgm_ops);")
+#dbSendQuery(con, "CREATE INDEX trgm_index_gin ON fy2020 USING GIN (park gin_trgm_ops);")
+
+# Similarity query
+
+dbGetQuery(con, 
+          "EXPLAIN ANALYZE SELECT DISTINCT park, similarity(park,'WHITE MOUNTAINS') AS score 
+           FROM fy2020
+           WHERE park % 'WHITE MOUNTAINS'
+           ORDER BY score DESC, park;")
+
+
+```
+
+
+```{r}
+dbGetQuery(con, 
+          "CREATE TABLE parks AS
+           SELECT word FROM
+           ts_stat('SELECT to_tsvector(''simple'',park) FROM fy2020');")
+
+dbSendQuery(con, 
+            "CREATE INDEX words_idx ON parks USING GIN (word gin_trgm_ops);")
+
+dfx <- dbGetQuery(con,
+           "SELECT word, similarity(word, 'WHITE MOUNTAINS') AS score
+           FROM parks
+           WHERE word % 'WHITE MOUNTAINS'
+           ORDER BY score DESC, word;")
+
+df.tst <- dbReadTable(con, "parks")
+d1 <- lapply(1:nrow(df.tst), function(i) {utf8ToInt(df.tst$word[i])})
+d2 <- lapply(c("whit"), utf8ToInt)
+v <- stringdist::seq_dist(d1,d2)
+```
+
+
+
+
+## References
+
+[pg_trgm documentation](https://www.postgresql.org/docs/9.6/pgtrgm.html)  
+[indexing pg_trgm](https://blog.pythian.com/indexing-text-columns-with-gist-or-gin-to-optimize-like-ilike-using-pg_trgm-in-postgres-9-1-part-1-2/)  
+[RPostgres](https://www.datacareer.de/blog/connect-to-postgresql-with-r-a-step-by-step-example/)  
+
+ 
+
+
