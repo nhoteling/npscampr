@@ -1,0 +1,65 @@
+---
+title: "Models"
+author: "Nathan Hoteling"
+date: '2022-06-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(stringr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(readr)
+library(forcats)
+library(tidyr)
+
+df.res <- readRDS("data/camping_reservations.rds")
+df.dly <- readRDS("data/camping_daily.rds")
+```
+
+<hr>
+<br>
+<br>
+
+## Introduction
+
+The goal here is to develop a model that will predict the number of _reservable_ campsites available at a given location based on a booking date and a camping date.
+
+## Test Case: Canyonlands
+
+Canyonlands National Park is extremely popular during certain times of the year.
+
+```{r}
+# Read pre-processed data
+df.daily <- readRDS("data/camping_daily.rds")      # daily totals
+df.res <- readRDS("data/camping_reservations.rds") # individual reservations
+parks_converter <- read.csv("data/parks-converter.csv", header=TRUE)
+facilities_converter <- read.csv("data/facilities-converter.csv", header=TRUE)
+df.daily$park <- facilities_converter$park[match(df.daily$facility,facilities_converter$npscampr)]
+
+# Now read file with all campsites, aggregate, etc
+df.sites <- read.csv("data/raw/RIDBFullExport_V1_CSV/Campsites_API_v1.csv", stringsAsFactors = FALSE) %>%
+  filter(FacilityID %in% df.res$facilityid) %>%
+  group_by(FacilityID) %>%
+  summarise(nsites = n()) %>%
+  rename(facilityid = FacilityID) %>%
+  mutate(facilityid = as.character(facilityid)) %>%
+  left_join(
+    df.res %>% select(facility, facilityid, park, state, lon, lat) %>% 
+      group_by(facilityid) %>%
+      summarise(facility=max(facility), 
+                park=max(park), 
+                state=max(state),
+                lon=mean(lon, na.rm=TRUE), lat=mean(lat, na.rm=TRUE)),
+    by = "facilityid"
+  )
+```
+
+
+```{r}
+df.c <- df.daily %>% filter(park == "Canyonlands National Park")
+```
+

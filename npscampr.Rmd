@@ -78,6 +78,8 @@ write_rds(df.raw, file="data/rds/raw_reservations2015.rds")
 
 
 ```{r, eval=FALSE, include=FALSE, echo=FALSE}
+## DON'T RUN THIS CHUNK ##
+
 # Data Pre-processing
 # - Filter raw data down to NPS and USFS camping reservations
 # - Standardize naming conventions; ie: park, facility, etc
@@ -246,14 +248,16 @@ write_rds(df.res, file="data/camping_reservations_YYYY.rds")
 
 ```{r, eval=FALSE, include=FALSE}
 # Combine annual NPS reservations data into a single file
-res2020 <- readRDS("data/camping_reservations_2020.rds")
-res2019 <- readRDS("data/camping_reservations_2019.rds")
-res2018 <- readRDS("data/camping_reservations_2018.rds")
-res2017 <- readRDS("data/camping_reservations_2017.rds")
-res2016 <- readRDS("data/camping_reservations_2016.rds")
-res2015 <- readRDS("data/camping_reservations_2015.rds")
+res2020 <- readRDS("data/rds/camping_reservations_2020.rds")
+res2019 <- readRDS("data/rds/camping_reservations_2019.rds")
+res2018 <- readRDS("data/rds/camping_reservations_2018.rds")
+res2017 <- readRDS("data/rds/camping_reservations_2017.rds")
+res2016 <- readRDS("data/rds/camping_reservations_2016.rds")
+res2015 <- readRDS("data/rds/camping_reservations_2015.rds")
 res <- rbind(res2015, res2016, res2017, res2018, res2019, res2020)
-write_rds(res, file="data/rds/camping_reservations.rds")
+#write_rds(res, file="data/rds/camping_reservations.rds")
+
+
 ```
 
 
